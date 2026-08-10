@@ -1,0 +1,62 @@
+[agent]
+  interval = "{{ interval }}"
+  round_interval = true
+  metric_batch_size = 1000
+  metric_buffer_limit = 10000
+  precision = "1ms"
+  collection_jitter = "0s"
+  flush_interval = "10s"
+  flush_jitter = "5s"
+
+# QuestDB: ILP over HTTP (InfluxDB v1 compatible) endpoint: /write
+[[outputs.influxdb]]
+  urls = ["{{ questdb_endpoint }}"]
+  database = "telegraf"
+  skip_database_creation = true
+  timeout = "{{ timeout }}"
+  insecure_skip_verify = true
+  content_encoding = "identity"
+
+[[inputs.cpu]]
+  interval = "{{ interval }}"
+  percpu = true
+  totalcpu = true
+  collect_cpu_time = false
+  report_active = false
+  core_tags = true
+
+[[inputs.mem]]
+  interval = "{{ interval }}"
+
+[[inputs.exec]]
+  interval = "{{ interval }}"
+  timeout  = "{{ timeout }}"
+  commands = ["bash /etc/telegraf/parse.sh"]
+  data_format = "influx"
+
+[[inputs.exec]]
+  interval = "{{ interval }}"
+  timeout  = "{{ timeout }}"
+  commands = ["bash /etc/telegraf/psu.sh"]
+  data_format = "influx"
+
+{% if diskio %}
+[[inputs.diskio]]
+  interval = "{{ interval }}"
+  devices = ["sd?", "nvme[0-9]n[0-9]*", "nvme[0-9][0-9]n[0-9]*"]
+  skip_serial_number = true
+{% endif %}
+
+[[inputs.infiniband]]
+  interval = "{{ interval }}"
+  gather_rdma = true
+
+[[inputs.net]]
+  interval = "{{ interval }}"
+  interfaces = ["bond0", "ibp*"]
+  ignore_protocol_stats = true
+
+[[inputs.turbostat]]
+  interval = "{{ interval }}"
+  path = "/usr/bin/turbostat"
+  use_sudo = true

@@ -1,0 +1,20 @@
+
+
+# Enable this only in storage nodes
+diskio = false
+
+# number of PSU device the node has.
+n_psu_devices = 2
+
+# Questdb endpoint
+questdb_endpoint = "https://timeseriesdb.dev.rd.areasciencepark.it"
+
+# Sampling period used by every [[inputs.*]] plugin and by the agent itself.
+interval = "1s"
+
+# Timeout applied to every plugin that can block (exec inputs, influxdb output).
+timeout = "10s"
+
+# Container image / name used by the quadlet unit.
+container_image = "docker.io/pasianeight/telegraf-monitoring:latest"
+container_name = "telegraf"

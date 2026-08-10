@@ -1,0 +1,43 @@
+[Unit]
+Description=Telegraf Monitoring Container
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image={{ container_image }}
+ContainerName={{ container_name }}
+
+Network=host
+
+Volume=/root/telegraf/telegraf.config:/etc/telegraf/telegraf.conf:Z
+Volume=/root/telegraf/parse.sh:/etc/telegraf/parse.sh:Z
+
+
+Volume=/root/telegraf/psu.sh:/etc/telegraf/psu.sh:Z
+Environment=N_PSU_DEVICES={{ n_psu_devices }}
+
+
+{% if diskio %}
+# Host filesystem views needed by inputs.diskio (and device metadata via udev)
+Volume=/proc:/hostfs/proc:ro
+Volume=/sys:/hostfs/sys:ro
+Volume=/dev:/hostfs/dev:ro
+Volume=/run/udev:/run/udev:ro
+
+Environment=HOST_PROC=/hostfs/proc
+Environment=HOST_SYS=/hostfs/sys
+Environment=HOST_DEV=/hostfs/dev
+{% endif %}
+
+PodmanArgs=--privileged
+
+DropCapability=all
+AddCapability=CAP_SETFCAP CAP_SETUID CAP_SETGID CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_ADMIN
+
+[Service]
+Restart=always
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
+
