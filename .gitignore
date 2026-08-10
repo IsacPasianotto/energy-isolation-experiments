@@ -1,0 +1,14 @@
+
+#python envs:
+venv/*
+env/*
+.venv/*
+.env/*
+
+
+# Mac 
+**/.DS_Store
+
+
+# last-config folder
+last_applied_configuration/*
