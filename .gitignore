@@ -9,6 +9,13 @@ env/*
 # Mac 
 **/.DS_Store
 
+# thing that must not be committed
+src/02-fan-speed.sh
 
 # last-config folder
 last_applied_configuration/*
+
+
+
+
+data-analysis/data/*
