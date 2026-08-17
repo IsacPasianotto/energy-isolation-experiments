@@ -17,19 +17,36 @@ pip install -r requirements.txt
 
 
 
-Step script:
+## Personal annotation...
 
-- setup monitoring
-- DB -> ~setup_ready~
-- Wait 3 min for stabilization
-- start with the fan:
-  - DB -> ~starting_fan xxxx rpm~
-  - wait
-  - DB -> ~ending_fan xxxx rpm~
-  - Repeat with different value.
+Fan can not be controlled by ipmitool, due to dell limitation
 
-- memstress
 
-- netstress
+## Memstress
 
-- ...
+
+To compute the Theoretical BW:
+
+$$
+\mathcal{B}_{\text{peak}} =
+N_{\text{channels}} \cdot
+f_{\text{clock}} \cdot
+w_{\text{bus}}
+$$
+
+Where:
+
+- $N_{\text{channels}}$ is the number of memory channels in the system.
+- $f_{\text{clock}}$ is the clock frequency of the memory.
+- $w_{\text{bus}}$ is the width of the memory bus (in bytes).
+
+
+
+| Node     | N_channels | f_clock (MHz) | w_bus (bytes) | Available (GB) | B_peak (GB/s) |
+| -------- | ---------- | ------------- | ------------- | -------------- | ------------- |
+| thin007  | 12         | 2666          | 8             | 720            | 256           |
+| fat001   | 24         | 266           | 8             | 1500           | 512           |
+| epyc001  | 16         | 3200          | 8             | 490            | 410           |
+| genoa001 | 16         | 4800          | 8             | 500            | 614           |
+
+
