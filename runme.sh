@@ -166,14 +166,14 @@ mkdir -p memstressout
 
 for perc in 5 10 25 35 50 60 75 80
 do
-  echo " ---- Starting memstress at iteration ${iter}: $(date '+%Y-%m-%d %H:%M:%S %Z') ----"
+  echo " ---- Starting memstress at iteration ${perc}: $(date '+%Y-%m-%d %H:%M:%S %Z') ----"
 
   # 8 perc, 180+30 secs per run, 15 runs
   #   -> 26640 seconds = 7 hours and 24 minutes 
   $MEMSTRESS_BIN \
     --percentage ${perc} \
     --time-to-run 180 \
-    --wait-time 30 \ 
+    --wait-time 30 \
     --runs 15
   sleep 180
   # backup the file for futher analysis
