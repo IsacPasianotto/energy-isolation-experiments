@@ -21,8 +21,25 @@ echo "Running 'sudo -v' to check for sudo privileges..."
 sudo -v \
     || die "error, cannot use sudo. Please make sure your user has sudo privileges to use this script."
 
+# -- Python virtual environment: reuse ./env if it is already there, otherwise create it
+if [ -d env ]; then
+    # shellcheck source=/dev/null
+    source env/bin/activate \
+        || die "error, could not activate the existing virtual environment in ./env"
+else
+    [ -f requirements.txt ] \
+        || die "error, requirements.txt not found, cannot set up the virtual environment."
+    python3 -m venv env \
+        || die "error, could not create the virtual environment in ./env"
+    # shellcheck source=/dev/null
+    source env/bin/activate \
+        || die "error, could not activate the virtual environment in ./env"
+    pip install -r requirements.txt \
+        || die "error, could not install the dependencies listed in requirements.txt"
+fi
+
 python3 -c 'import jinja2' >/dev/null 2>&1 \
-    || die "the jinja2 python module is not available; install it with 'python3 -m pip install jinja2' (or the distro package python3-jinja2)."
+    || die "the jinja2 python module is not available in ./env; remove the env directory and re-run this script to rebuild it."
 
 
 # check that podman is at least version 4.0 (quadlet was introduced in 4.0)
