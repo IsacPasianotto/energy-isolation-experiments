@@ -171,6 +171,9 @@ $MEMSTRESS_BIN \
   --wait-time 30 \ 
   --runs 15
 
+# have some time in do-nothing mode to have a idle baseline 
+#   1.5 hours, in order to not have problems with non-rapresentative data in the dataset
+sleep 5400
 
 
 popd >/dev/null # return to ROOT_PRJ_DIR
