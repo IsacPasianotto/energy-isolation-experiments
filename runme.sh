@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 
 #SBATCH -A lade
-#SBATCH -p GPU
+#SBATCH -p THIN
 #SBATCH --nodes=1
-#SBATCH --mem=230G
+#SBATCH --mem=700G
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=24
-#SBATCH --time=10:00:00
+#SBATCH --time=15:00:00
 #SBATCH --job-name=memstressbch
-#SBATCH --nodelist=gpu002
+#SBATCH --nodelist=thin008
 #SBATCH --output=slurmout/slurm-%j.out
 #SBATCH --error=slurmout/slurm-%j.err
 #SBATCH --exclusive
@@ -159,21 +159,27 @@ make
 #ensure the binary exists and is executable
 [ -x "$MEMSTRESS_BIN" ] || die "memstress binary not found or not executable: $MEMSTRESS_BIN"
 
-# 4 experiments, each with 15 run of 300 seconds, with 30 seconds wait time between runs:
-#    --> total: approx: 18900 seconds = 5 hours and 15 minutes
 
 echo " ---- Get ready for running memstress experiments, this will take a while (approx 5 hours and 15 minutes) ----"
-echo " ---- Starting memstress at: $(date '+%Y-%m-%d %H:%M:%S %Z') ----"
 
-$MEMSTRESS_BIN \
-  --size 150G \
-  --time-to-run 300 \
-  --wait-time 30 \ 
-  --runs 15
+mkdir -p memstressout
 
-# have some time in do-nothing mode to have a idle baseline 
-#   1.5 hours, in order to not have problems with non-rapresentative data in the dataset
-sleep 5400
+for perc in 5 10 25 35 50 60 75 80
+do
+  echo " ---- Starting memstress at iteration ${iter}: $(date '+%Y-%m-%d %H:%M:%S %Z') ----"
+
+  # 8 perc, 180+30 secs per run, 15 runs
+  #   -> 26640 seconds = 7 hours and 24 minutes 
+  $MEMSTRESS_BIN \
+    --percentage ${perc} \
+    --time-to-run 180 \
+    --wait-time 30 \ 
+    --runs 15
+  sleep 180
+  # backup the file for futher analysis
+  mv ${MEMSTRESS_DIR}/memstress.csv ${MEMSTRESS_DIR}/memstressout/memstress_${perc}.csv
+  mv ${MEMSTRESS_DIR}/memstress_events.log ${MEMSTRESS_DIR}/memstressout/memstress_events_${perc}.log
+done
 
 
 popd >/dev/null # return to ROOT_PRJ_DIR
