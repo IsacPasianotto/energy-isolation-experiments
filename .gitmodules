@@ -1,0 +1,4 @@
+[submodule "src/memstress"]
+	path = src/memstress
+	url = git@github.com:IsacPasianotto/memstress.git
+	branch = main

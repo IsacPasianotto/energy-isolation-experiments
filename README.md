@@ -6,6 +6,7 @@
 ```bash
 git clone ...
 cd ...
+git submodule update --init --recursive
 ```
 
 ```bash
