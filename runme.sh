@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 
 #SBATCH -A lade
-#SBATCH -p GENOA
+#SBATCH -p GPU
 #SBATCH --nodes=2
 #SBATCH --mem=490G
 #SBATCH --ntasks-per-node=64
 #SBATCH --cpus-per-task=1
-#SBATCH --time=48:00:00
-#SBATCH --job-name=io-cephstress
+#SBATCH --time=10:00:00
+#SBATCH --job-name=memstressbch
+#SBATCH --nodelist=gpu003
 #SBATCH --output=slurmout/slurm-%j.out
 #SBATCH --error=slurmout/slurm-%j.err
 
@@ -31,12 +32,25 @@ set -euo pipefail
 # -- Exit with a message and a non-zero exit code
 die() {
   printf 'error: %s\n' "$*" >&2
+  # empty dir stack if any
+  dirs -c 2>/dev/null
   exit 1
 }
 
 #
 # --- 0. Prerequisites
 #
+
+# TODO: <---  Adjust it 
+if command -v module >/dev/null 2>&1; then
+  module purge
+  module Core/26.03
+  module load gcc/14.2.0
+  module load cmake/3.31.9
+  module load python/3.12.12
+fi
+
+
 commands=(python3 sudo git podman)
 for cmd in "${commands[@]}"; do
   command -v "$cmd" >/dev/null 2>&1 ||
@@ -87,6 +101,8 @@ OUT_DIR="${ROOT_PRJ_DIR}/last_applied_configuration"
 RENDER_JINJA_TEMPLATES_SCRIPT="${ROOT_PRJ_DIR}/src/00-render-template.py"
 DEPLOY_QUADLET_SCRIPT="${ROOT_PRJ_DIR}/src/01-deploy-quadlet-container.sh"
 DESTROY_QUADLET_SCRIPT="${ROOT_PRJ_DIR}/src/99-destroy-quadlet-container.sh"
+MEMSTRESS_DIR="${ROOT_PRJ_DIR}/src/memstress"
+MEMSTRESS_BIN="${MEMSTRESS_DIR}/build/memstress"
 
 # checks
 [ -d "$ROOT_PRJ_DIR" ] || die "not in a git repository, clone the project from the git server please."
@@ -96,6 +112,7 @@ DESTROY_QUADLET_SCRIPT="${ROOT_PRJ_DIR}/src/99-destroy-quadlet-container.sh"
 [ -f "$RENDER_JINJA_TEMPLATES_SCRIPT" ] || die "render script not found: $RENDER_JINJA_TEMPLATES_SCRIPT"
 [ -f "$DEPLOY_QUADLET_SCRIPT" ] || die "deploy script not found: $DEPLOY_QUADLET_SCRIPT"
 [ -f "$DESTROY_QUADLET_SCRIPT" ] || die "destroy script not found: $DESTROY_QUADLET_SCRIPT"
+[ -d "$MEMSTRESS_DIR" ] || die "memstress directory not found: $MEMSTRESS_DIR. Please init the submodules with 'git submodule update --init --recursive'."
 
 #
 # --- 2. Render jinja templates
@@ -133,5 +150,23 @@ trap 'cleanup; exit 143' TERM
 #
 # --- 4. Experiments
 #
-# TODO: the actual workload goes here (fan sweep, memstress, netstress, ...)
-echo "TODO: no experiment implemented yet"
+
+# --- 4.1. Build the memstress binary
+
+pushd "$MEMSTRESS_DIR" >/dev/null || die "could not change directory to $MEMSTRESS_DIR"
+make
+#ensure the binary exists and is executable
+[ -x "$MEMSTRESS_BIN" ] || die "memstress binary not found or not executable: $MEMSTRESS_BIN"
+
+# 4 experiments, each with 15 run of 300 seconds, with 30 seconds wait time between runs:
+#    --> total: approx: 18900 seconds = 5 hours and 15 minutes
+
+$MEMSTRESS_BIN \
+  --size 150G \
+  --time-to-run 300 \
+  --wait-time 30 \ 
+  --runs 15
+
+
+
+popd >/dev/null # return to ROOT_PRJ_DIR
