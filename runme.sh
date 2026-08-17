@@ -2,15 +2,16 @@
 
 #SBATCH -A lade
 #SBATCH -p GPU
-#SBATCH --nodes=2
-#SBATCH --mem=490G
-#SBATCH --ntasks-per-node=64
-#SBATCH --cpus-per-task=1
+#SBATCH --nodes=1
+#SBATCH --mem=230G
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=24
 #SBATCH --time=10:00:00
 #SBATCH --job-name=memstressbch
-#SBATCH --nodelist=gpu003
+#SBATCH --nodelist=gpu002
 #SBATCH --output=slurmout/slurm-%j.out
 #SBATCH --error=slurmout/slurm-%j.err
+#SBATCH --exclusive
 
 mkdir -p slurmout
 
@@ -160,6 +161,9 @@ make
 
 # 4 experiments, each with 15 run of 300 seconds, with 30 seconds wait time between runs:
 #    --> total: approx: 18900 seconds = 5 hours and 15 minutes
+
+echo " ---- Get ready for running memstress experiments, this will take a while (approx 5 hours and 15 minutes) ----"
+echo " ---- Starting memstress at: $(date '+%Y-%m-%d %H:%M:%S %Z') ----"
 
 $MEMSTRESS_BIN \
   --size 150G \
