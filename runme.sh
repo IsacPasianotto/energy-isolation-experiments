@@ -45,7 +45,7 @@ die() {
 # TODO: <---  Adjust it 
 if command -v module >/dev/null 2>&1; then
   module purge
-  module Core/26.03
+  module load Core/26.03
   module load gcc/14.2.0
   module load cmake/3.31.9
   module load python/3.12.12
