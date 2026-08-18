@@ -2,10 +2,10 @@
 
 #SBATCH -A lade
 #SBATCH -p THIN
-#SBATCH --nodes=1
+#SBATCH --nodes=2
 #SBATCH --mem=700G
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=24
+#SBATCH --cpus-per-task=12
 #SBATCH --time=15:00:00
 #SBATCH --job-name=memstressbch
 #SBATCH --nodelist=thin008
@@ -14,6 +14,17 @@
 #SBATCH --exclusive
 
 mkdir -p slurmout
+INSTRUMENTED_NODE="thin008"
+
+# -- The sbatch script body executes once, on whichever node Slurm picks as the
+#    "batch host" for the allocation; with more than one node in the allocation
+#    that host is not guaranteed to be $INSTRUMENTED_NODE. Rather than skip the
+#    privileged steps when we happen to land on the wrong host, every privileged
+#    step below is explicitly dispatched onto $INSTRUMENTED_NODE via a dedicated
+#    srun step (`srun --nodelist="$INSTRUMENTED_NODE" -N1 -n1 --exact ...`),
+#    which runs on that specific, already-allocated node regardless of where
+#    this script itself happens to be executing.
+CURRENT_NODE="${SLURMD_NODENAME:-$(hostname -s)}"
 
 echo "------------- JOB PREAMBLE ---------------"
 echo "Date:              $(date '+%Y-%m-%d')"
@@ -26,6 +37,7 @@ echo "Tasks per node:    ${SLURM_NTASKS_PER_NODE:-<not in slurm>}"
 echo "CPUs per task:     ${SLURM_CPUS_PER_TASK:-<not in slurm>}"
 echo "Node assigned:     ${SLURM_JOB_NODELIST:-$(hostname)}"
 echo "Submit directory:  ${SLURM_SUBMIT_DIR:-$PWD}"
+echo "Current node:      ${CURRENT_NODE} (privileged steps dispatched to: ${INSTRUMENTED_NODE})"
 echo "------------------------------------------"
 
 set -euo pipefail
@@ -49,18 +61,19 @@ if command -v module >/dev/null 2>&1; then
   module load gcc/14.2.0
   module load cmake/3.31.9
   module load python/3.12.12
+  module load openmpi/5.0.8
 fi
 
 
-commands=(python3 sudo git podman)
+commands=(python3 sudo git podman mpirun wget tar)
 for cmd in "${commands[@]}"; do
   command -v "$cmd" >/dev/null 2>&1 ||
     die "error, command $cmd not available. Please install $cmd to use this script."
 done
 
-echo "Running 'sudo -v' to check for sudo privileges..."
-sudo -v ||
-  die "error, cannot use sudo. Please make sure your user has sudo privileges to use this script."
+echo "Running 'sudo -v' on ${INSTRUMENTED_NODE} to check for sudo privileges..."
+srun --nodelist="$INSTRUMENTED_NODE" -N1 -n1 --exact sudo -v ||
+  die "error, cannot use sudo on ${INSTRUMENTED_NODE}. Please make sure your user has sudo privileges there."
 
 # -- Python virtual environment: reuse ./env if it is already there, otherwise create it
 if [ -d env ]; then
@@ -83,13 +96,15 @@ python3 -c 'import jinja2' >/dev/null 2>&1 ||
   die "the jinja2 python module is not available in ./env; remove the env directory and re-run this script to rebuild it."
 
 # check that podman is at least version 4.0 (quadlet was introduced in 4.0)
-podman_version=$(sudo podman --version | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)
+# NOTE: dispatched to $INSTRUMENTED_NODE like every other privileged command,
+# so the version we check is the one that will actually run the deploy script.
+podman_version=$(srun --nodelist="$INSTRUMENTED_NODE" -N1 -n1 --exact sudo podman --version | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)
 podman_major=${podman_version%%.*}
 [[ "$podman_major" =~ ^[0-9]+$ ]] ||
-  die "error, could not determine podman version from 'podman --version'."
+  die "error, could not determine podman version from 'podman --version' on ${INSTRUMENTED_NODE}."
 
 ((podman_major >= 4)) ||
-  die "error, podman version 4.0 or later is required (found $podman_version). Please upgrade your podman installation."
+  die "error, podman version 4.0 or later is required on ${INSTRUMENTED_NODE} (found $podman_version). Please upgrade your podman installation."
 
 #
 # --- 1. Paths
@@ -102,8 +117,6 @@ OUT_DIR="${ROOT_PRJ_DIR}/last_applied_configuration"
 RENDER_JINJA_TEMPLATES_SCRIPT="${ROOT_PRJ_DIR}/src/00-render-template.py"
 DEPLOY_QUADLET_SCRIPT="${ROOT_PRJ_DIR}/src/01-deploy-quadlet-container.sh"
 DESTROY_QUADLET_SCRIPT="${ROOT_PRJ_DIR}/src/99-destroy-quadlet-container.sh"
-MEMSTRESS_DIR="${ROOT_PRJ_DIR}/src/memstress"
-MEMSTRESS_BIN="${MEMSTRESS_DIR}/build/memstress"
 
 # checks
 [ -d "$ROOT_PRJ_DIR" ] || die "not in a git repository, clone the project from the git server please."
@@ -113,7 +126,6 @@ MEMSTRESS_BIN="${MEMSTRESS_DIR}/build/memstress"
 [ -f "$RENDER_JINJA_TEMPLATES_SCRIPT" ] || die "render script not found: $RENDER_JINJA_TEMPLATES_SCRIPT"
 [ -f "$DEPLOY_QUADLET_SCRIPT" ] || die "deploy script not found: $DEPLOY_QUADLET_SCRIPT"
 [ -f "$DESTROY_QUADLET_SCRIPT" ] || die "destroy script not found: $DESTROY_QUADLET_SCRIPT"
-[ -d "$MEMSTRESS_DIR" ] || die "memstress directory not found: $MEMSTRESS_DIR. Please init the submodules with 'git submodule update --init --recursive'."
 
 #
 # --- 2. Render jinja templates
@@ -132,8 +144,11 @@ printf '\nconfiguration rendered in %s\n' "$OUT_DIR"
 #
 # --- 3. Deploy the monitoring (telegraf quadlet container)
 #
-bash "$DEPLOY_QUADLET_SCRIPT" ||
-  die "deployment of the telegraf quadlet failed."
+
+# trick because only some node are allowed to install the monitoring (requires sudo privileges)
+
+srun --nodelist="$INSTRUMENTED_NODE" -N1 -n1 --exact bash "$DEPLOY_QUADLET_SCRIPT" ||
+  die "deployment of the telegraf quadlet failed on ${INSTRUMENTED_NODE}."
 
 # Set up the cleanup as a trap, so it will run on exit, no matter how the script exits (success, error, or interrupt).
 # A signal handler that just returns would let the script resume where it was
@@ -141,7 +156,7 @@ bash "$DEPLOY_QUADLET_SCRIPT" ||
 cleanup() {
   trap - EXIT INT TERM
   printf '\n=== cleaning up ===\n'
-  bash "$DESTROY_QUADLET_SCRIPT" ||
+  srun --nodelist="$INSTRUMENTED_NODE" -N1 -n1 --exact bash "$DESTROY_QUADLET_SCRIPT" ||
     printf 'warning: cleanup did not complete, check the node by hand.\n' >&2
 }
 trap cleanup EXIT
@@ -150,36 +165,6 @@ trap 'cleanup; exit 143' TERM
 
 #
 # --- 4. Experiments
-#
 
-# --- 4.1. Build the memstress binary
-
-pushd "$MEMSTRESS_DIR" >/dev/null || die "could not change directory to $MEMSTRESS_DIR"
-make
-#ensure the binary exists and is executable
-[ -x "$MEMSTRESS_BIN" ] || die "memstress binary not found or not executable: $MEMSTRESS_BIN"
-
-
-echo " ---- Get ready for running memstress experiments, this will take a while (approx 5 hours and 15 minutes) ----"
-
-mkdir -p memstressout
-
-for perc in 5 10 25 35 50 60 75 80
-do
-  echo " ---- Starting memstress at iteration ${perc}: $(date '+%Y-%m-%d %H:%M:%S %Z') ----"
-
-  # 8 perc, 180+30 secs per run, 15 runs
-  #   -> 26640 seconds = 7 hours and 24 minutes 
-  $MEMSTRESS_BIN \
-    --percentage ${perc} \
-    --time-to-run 180 \
-    --wait-time 30 \
-    --runs 15
-  sleep 180
-  # backup the file for futher analysis
-  mv ${MEMSTRESS_DIR}/memstress.csv ${MEMSTRESS_DIR}/memstressout/memstress_${perc}.csv
-  mv ${MEMSTRESS_DIR}/memstress_events.log ${MEMSTRESS_DIR}/memstressout/memstress_events_${perc}.log
-done
-
-
-popd >/dev/null # return to ROOT_PRJ_DIR
+# ./src/03-memstress.sh || die "memstress experiments failed."
+./src/04-netstress.sh || die "netstress experiments failed."
