@@ -8,23 +8,11 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --time=15:00:00
 #SBATCH --job-name=memstressbch
-#SBATCH --nodelist=thin008
 #SBATCH --output=slurmout/slurm-%j.out
 #SBATCH --error=slurmout/slurm-%j.err
 #SBATCH --exclusive
 
 mkdir -p slurmout
-INSTRUMENTED_NODE="thin008"
-
-# -- The sbatch script body executes once, on whichever node Slurm picks as the
-#    "batch host" for the allocation; with more than one node in the allocation
-#    that host is not guaranteed to be $INSTRUMENTED_NODE. Rather than skip the
-#    privileged steps when we happen to land on the wrong host, every privileged
-#    step below is explicitly dispatched onto $INSTRUMENTED_NODE via a dedicated
-#    srun step (`srun --nodelist="$INSTRUMENTED_NODE" -N1 -n1 --exact ...`),
-#    which runs on that specific, already-allocated node regardless of where
-#    this script itself happens to be executing.
-CURRENT_NODE="${SLURMD_NODENAME:-$(hostname -s)}"
 
 echo "------------- JOB PREAMBLE ---------------"
 echo "Date:              $(date '+%Y-%m-%d')"
@@ -37,15 +25,13 @@ echo "Tasks per node:    ${SLURM_NTASKS_PER_NODE:-<not in slurm>}"
 echo "CPUs per task:     ${SLURM_CPUS_PER_TASK:-<not in slurm>}"
 echo "Node assigned:     ${SLURM_JOB_NODELIST:-$(hostname)}"
 echo "Submit directory:  ${SLURM_SUBMIT_DIR:-$PWD}"
-echo "Current node:      ${CURRENT_NODE} (privileged steps dispatched to: ${INSTRUMENTED_NODE})"
 echo "------------------------------------------"
 
 set -euo pipefail
 
-# -- Exit with a message and a non-zero exit code
+# -- Exit with a message and a non-zero exit code, emtpy dir stack
 die() {
   printf 'error: %s\n' "$*" >&2
-  # empty dir stack if any
   dirs -c 2>/dev/null
   exit 1
 }
@@ -71,9 +57,8 @@ for cmd in "${commands[@]}"; do
     die "error, command $cmd not available. Please install $cmd to use this script."
 done
 
-echo "Running 'sudo -v' on ${INSTRUMENTED_NODE} to check for sudo privileges..."
-srun --nodelist="$INSTRUMENTED_NODE" -N1 -n1 --exact sudo -v ||
-  die "error, cannot use sudo on ${INSTRUMENTED_NODE}. Please make sure your user has sudo privileges there."
+sudo -v ||
+  die "error, cannot use sudo. Please make sure your user has sudo privileges there."
 
 # -- Python virtual environment: reuse ./env if it is already there, otherwise create it
 if [ -d env ]; then
@@ -85,7 +70,6 @@ else
     die "error, requirements.txt not found, cannot set up the virtual environment."
   python3 -m venv env ||
     die "error, could not create the virtual environment in ./env"
-  # shellcheck source=/dev/null
   source env/bin/activate ||
     die "error, could not activate the virtual environment in ./env"
   pip install -r requirements.txt ||
@@ -96,15 +80,13 @@ python3 -c 'import jinja2' >/dev/null 2>&1 ||
   die "the jinja2 python module is not available in ./env; remove the env directory and re-run this script to rebuild it."
 
 # check that podman is at least version 4.0 (quadlet was introduced in 4.0)
-# NOTE: dispatched to $INSTRUMENTED_NODE like every other privileged command,
-# so the version we check is the one that will actually run the deploy script.
-podman_version=$(srun --nodelist="$INSTRUMENTED_NODE" -N1 -n1 --exact sudo podman --version | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)
+podman_version=$(sudo podman --version | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)
 podman_major=${podman_version%%.*}
 [[ "$podman_major" =~ ^[0-9]+$ ]] ||
-  die "error, could not determine podman version from 'podman --version' on ${INSTRUMENTED_NODE}."
+  die "error, could not determine podman version from 'podman --version'."
 
 ((podman_major >= 4)) ||
-  die "error, podman version 4.0 or later is required on ${INSTRUMENTED_NODE} (found $podman_version). Please upgrade your podman installation."
+  die "error, podman version 4.0 or later is required (found $podman_version). Please upgrade your podman installation."
 
 #
 # --- 1. Paths
@@ -144,27 +126,26 @@ printf '\nconfiguration rendered in %s\n' "$OUT_DIR"
 #
 # --- 3. Deploy the monitoring (telegraf quadlet container)
 #
-
-# trick because only some node are allowed to install the monitoring (requires sudo privileges)
-
-srun --nodelist="$INSTRUMENTED_NODE" -N1 -n1 --exact bash "$DEPLOY_QUADLET_SCRIPT" ||
-  die "deployment of the telegraf quadlet failed on ${INSTRUMENTED_NODE}."
-
+bash "$DEPLOY_QUADLET_SCRIPT" ||
+  die "deployment of the telegraf quadlet failed."
 # Set up the cleanup as a trap, so it will run on exit, no matter how the script exits (success, error, or interrupt).
 # A signal handler that just returns would let the script resume where it was
 # interrupted, so INT/TERM exit explicitly (128 + signal number).
 cleanup() {
   trap - EXIT INT TERM
   printf '\n=== cleaning up ===\n'
-  srun --nodelist="$INSTRUMENTED_NODE" -N1 -n1 --exact bash "$DESTROY_QUADLET_SCRIPT" ||
+  bash "$DESTROY_QUADLET_SCRIPT" ||
     printf 'warning: cleanup did not complete, check the node by hand.\n' >&2
 }
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
+
+
 #
 # --- 4. Experiments
+#
 
 # ./src/03-memstress.sh || die "memstress experiments failed."
 ./src/04-netstress.sh || die "netstress experiments failed."

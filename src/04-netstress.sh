@@ -8,6 +8,11 @@ die() {
   exit 1
 }
 
+# Logging helper: prefixes every status line with a UTC timestamp.
+log() {
+  printf '[%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
+}
+
 # --- Vars and configs
 
 ROOT_PRJ_DIR=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git repo, cannot determine ROOT_PRJ_DIR"
@@ -17,10 +22,15 @@ OSU_BENCHMARK_DIR="${SRC_DIR}/osu-micro-benchmarks"
 VERSION=7.5.2
 WARMUP=0
 SLEEP_BETWEEN=30
-RUNS_PER_CONFIG=10
-TARGET="${TARGET:-thin008}"   # monitored node, overridable via env
+RUNS_PER_CONFIG=2
 
 ETH_MCA="--mca pml ob1 --mca btl tcp,self,vader --mca btl_tcp_if_include bond0"
+
+# CSV log: one row per single benchmark run.
+CSV_FILE="${ROOT_PRJ_DIR}/osu_runs.csv"
+if [ ! -f "${CSV_FILE}" ]; then
+  echo "iter,message_size,situation,infiniband,t_start,t_end" > "${CSV_FILE}"
+fi
 
 # Iterations per message size, calibrated so each run takes ~10 minutes,
 # based on the bandwidth actually measured at that size (not fixed -i).
@@ -39,22 +49,24 @@ declare -A ETH_ITERS=(
   [2097152]=13060  [4194304]=6550
 )
 
+MSG_SIZES=(512 1024 2048 4096 8192 16384 32768 65536 131072 262144 524288 1048576 2097152 4194304)
+
 #
 # --- 0. Build osu-micro-benchmarks if not already installed
 #
-echo "=== 0. setup osu-micro-benchmarks v${VERSION} ==="
+log "=== 0. setup osu-micro-benchmarks v${VERSION} ==="
 
 mkdir -p "${OSU_BENCHMARK_DIR}"
 pushd "${OSU_BENCHMARK_DIR}" >/dev/null
 
 if [ ! -f "osu-micro-benchmarks-${VERSION}.tar.gz" ] && [ ! -d "osu-micro-benchmarks-${VERSION}" ]; then
   url="http://mvapich.cse.ohio-state.edu/download/mvapich/osu-micro-benchmarks-${VERSION}.tar.gz"
-  echo "sources not found, downloading from ${url}"
+  log "sources not found, downloading from ${url}"
   wget -q "$url" -O "osu-micro-benchmarks-${VERSION}.tar.gz" || die "could not download $url"
-  echo "extracting archive"
+  log "extracting archive"
   tar -xzf "osu-micro-benchmarks-${VERSION}.tar.gz"
 else
-  echo "sources already present, skipping download"
+  log "sources already present, skipping download"
 fi
 
 pushd "osu-micro-benchmarks-${VERSION}" >/dev/null
@@ -63,83 +75,89 @@ BIN_DIR="${OSU_BENCHMARK_DIR}/bin"
 PT2PT_DIR="${BIN_DIR}/libexec/osu-micro-benchmarks/mpi/pt2pt"
 
 if [ ! -x "${PT2PT_DIR}/osu_bw" ]; then
-  echo "binaries not found, configuring and building (prefix=${BIN_DIR})"
+  log "binaries not found, configuring and building (prefix=${BIN_DIR})"
   ./configure CC=mpicc CXX=mpicxx --prefix="${BIN_DIR}" || die "could not configure osu-micro-benchmarks"
   make -j 8 || die "could not build osu-micro-benchmarks"
   make install || die "could not install osu-micro-benchmarks"
-  echo "build completed"
+  log "build completed"
 else
-  echo "binaries already built in ${PT2PT_DIR}, skipping build"
+  log "binaries already built in ${PT2PT_DIR}, skipping build"
 fi
 
 pushd "${PT2PT_DIR}" >/dev/null
-echo "working dir: $(pwd)"
+log "working dir: $(pwd)"
 
 #
 # --- 1. SLURM node discovery
 #
-echo "=== 1. node discovery ==="
+log "=== 1. node discovery ==="
 
 nodes=$(scontrol show hostnames "$SLURM_JOB_NODELIST") || die "could not resolve SLURM_JOB_NODELIST"
-peer=$(grep -v -x "${TARGET}" <<< "$nodes")
+mapfile -t node_list <<< "$nodes"
 
-echo "monitored node: ${TARGET}"
-echo "peer node:      ${peer}"
+[ "${#node_list[@]}" -ge 2 ] || die "expected 2 nodes in \$SLURM_JOB_NODELIST, got: ${nodes}"
+
+node1="${node_list[0]}"
+node2="${node_list[1]}"
+
+log "node1: ${node1}     node2: ${node2}"
 
 #
-# --- 2. Test configurations: label | host_order | benchmark | extra mca opts
+# --- 2. Test configurations: situation | infiniband | host_order | benchmark | extra mca opts
 #
 configs=(
-  "IB-transmit|${TARGET},${peer}|osu_bw|"
-  "IB-receive|${peer},${TARGET}|osu_bw|"
-  "IB-bidirectional|${TARGET},${peer}|osu_bibw|"
-  "ETH-transmit|${TARGET},${peer}|osu_bw|${ETH_MCA}"
-  "ETH-receive|${peer},${TARGET}|osu_bw|${ETH_MCA}"
-  "ETH-bidirectional|${TARGET},${peer}|osu_bibw|${ETH_MCA}"
+  "transmit|True|${node1},${node2}|osu_bw|"
+  "receive|True|${node2},${node1}|osu_bw|"
+  "bibw|True|${node1},${node2}|osu_bibw|"
+  "transmit|False|${node1},${node2}|osu_bw|${ETH_MCA}"
+  "receive|False|${node2},${node1}|osu_bw|${ETH_MCA}"
+  "bibw|False|${node1},${node2}|osu_bibw|${ETH_MCA}"
 )
 
 #
-# --- 3. Run everything: for each configuration, RUNS_PER_CONFIG repetitions,
-#        one message size at a time, -i looked up from the right table so
-#        each run lasts ~10 minutes instead of a fixed iteration count.
+# --- 3. Run everything: outer loop is the repetition (iter), then message
+#        size, then configuration, as requested:
 #
-for cfg in "${configs[@]}"; do
-  IFS='|' read -r label host_order bench mca <<< "$cfg"
+#        for iter in 1..10:
+#            for size in sizes:
+#                for conf in configs:
+#                    do_the_benchmark
+#
+log "=== 3. running benchmarks ==="
 
-  # pick the iteration table matching this configuration's network
-  if [[ "$label" == IB-* ]]; then
-    net_table="IB_ITERS"
-  else
-    net_table="ETH_ITERS"
-  fi
+for run in $(seq 1 "$RUNS_PER_CONFIG"); do
+  for MSG_SIZE in "${MSG_SIZES[@]}"; do
+    for cfg in "${configs[@]}"; do
+      IFS='|' read -r situation infiniband host_order bench mca <<< "$cfg"
 
-  for run in $(seq 1 "$RUNS_PER_CONFIG"); do
-      for MSG_SIZE in 512 1024 2048 4096 8192 16384 32768 65536 131072 262144 524288 1048576 2097152 4194304; do
+      if [[ "$infiniband" == "True" ]]; then
+        ITERS="${IB_ITERS[$MSG_SIZE]}"
+      else
+        ITERS="${ETH_ITERS[$MSG_SIZE]}"
+      fi
 
-         if [[ "$net_table" == "IB_ITERS" ]]; then
-           ITERS="${IB_ITERS[$MSG_SIZE]}"
-         else
-           ITERS="${ETH_ITERS[$MSG_SIZE]}"
-         fi
+      log "iter ${run}/${RUNS_PER_CONFIG} | size ${MSG_SIZE}B | ${situation} | infiniband=${infiniband} | host order: ${host_order} | benchmark: ${bench} | mca: ${mca:-<none>} | iterations: ${ITERS}"
 
-         echo ""
-         echo "=== ${label} | run ${run}/${RUNS_PER_CONFIG} ==="
-         echo "host order: ${host_order}  benchmark: ${bench}  mca: ${mca:-<none>}"
-         echo "message size: ${MSG_SIZE} bytes  iterations: ${ITERS} (~10min target)  warmup: ${WARMUP}"
+      t_start=$(date -u +'%Y-%m-%dT%H:%M:%S.%3NZ')
 
-         mpirun -np 2 --host "${host_order}" ${mca} \
-            "./${bench}" -m "${MSG_SIZE}:${MSG_SIZE}" -x "${WARMUP}" -i "${ITERS}"
+      mpirun -np 2 --host "${host_order}" ${mca} \
+        "./${bench}" -m "${MSG_SIZE}:${MSG_SIZE}" -x "${WARMUP}" -i "${ITERS}"
 
-         echo "run ${run}/${RUNS_PER_CONFIG} for ${label} @ ${MSG_SIZE}B done, sleeping ${SLEEP_BETWEEN}s"
-         sleep "${SLEEP_BETWEEN}"
-      done
+      t_end=$(date -u +'%Y-%m-%dT%H:%M:%S.%3NZ')
+
+      echo "${run},${MSG_SIZE},${situation},${infiniband},${t_start},${t_end}" >> "${CSV_FILE}"
+
+      log "done iter ${run}/${RUNS_PER_CONFIG} | size ${MSG_SIZE}B | ${situation} | infiniband=${infiniband}, sleeping ${SLEEP_BETWEEN}s"
+      sleep "${SLEEP_BETWEEN}"
+    done
   done
 done
 
 #
 # --- 4. Done
 #
-echo "=== all OSU tests completed ==="
+log "=== all OSU tests completed ==="
+log "csv log written to ${CSV_FILE}"
 
 popd >/dev/null # leave PT2PT_DIR
 popd >/dev/null # leave osu-micro-benchmarks-$VERSION
